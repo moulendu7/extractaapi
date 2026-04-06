@@ -3,19 +3,16 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 import shutil
 import re
+import requests
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-
 app = FastAPI()
-
 @app.get("/")
 def home():
     return {"status": "API running ✅"}
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,24 +28,12 @@ FAISS_DIR = "faiss"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(FAISS_DIR, exist_ok=True)
 
-
 embeddings = HuggingFaceEmbeddings(
     model_name="BAAI/bge-small-en-v1.5",
     encode_kwargs={"normalize_embeddings": True}
 )
 
-
-tokenizer = None
-model = None
-
-def load_model():
-    global tokenizer, model
-
-    if tokenizer is None:
-        print("Loading model...")
-        tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
-        model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-small")
-        print("Model loaded ✅")
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 def clean_text(text):
     return re.sub(r'\s+', ' ', text).strip()
@@ -72,22 +57,15 @@ async def upload(file: UploadFile = File(...), user_id: str = ""):
 
     return {"message": "PDF processed successfully"}
 
-@app.get("/ask")
-def ask(user_id: str, question: str):
+def call_llm(context, question):
+    API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
 
-    load_model()  # 🔥 KEY FIX
-
-    try:
-        vectorstore = FAISS.load_local(f"{FAISS_DIR}/{user_id}", embeddings)
-    except:
-        return {"answer": "❌ Upload PDF first."}
-
-    docs = vectorstore.as_retriever(search_kwargs={"k": 3}).invoke(question)
-
-    context = "\n\n".join([clean_text(d.page_content)[:400] for d in docs])
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}"
+    }
 
     prompt = f"""
-Answer clearly and in detail using ONLY the context.
+Answer clearly using the context below.
 
 Context:
 {context}
@@ -97,13 +75,30 @@ Question: {question}
 Answer:
 """
 
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
-
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=150
+    response = requests.post(
+        API_URL,
+        headers=headers,
+        json={"inputs": prompt}
     )
 
-    answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    result = response.json()
 
+    try:
+        return result[0]["generated_text"]
+    except:
+        return "⚠️ LLM error. Try again."
+
+
+@app.get("/ask")
+def ask(user_id: str, question: str):
+    try:
+        vectorstore = FAISS.load_local(f"{FAISS_DIR}/{user_id}", embeddings)
+    except:
+        return {"answer": "❌ Upload PDF first."}
+
+    docs = vectorstore.as_retriever(search_kwargs={"k": 3}).invoke(question)
+
+    context = "\n\n".join([clean_text(d.page_content)[:400] for d in docs])
+
+    answer = call_llm(context, question)
     return {"answer": answer}

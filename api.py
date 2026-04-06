@@ -4,15 +4,17 @@ import os
 import shutil
 import re
 import requests
+
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-
+from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 app = FastAPI()
+
 @app.get("/")
 def home():
     return {"status": "API running ✅"}
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,13 +30,14 @@ FAISS_DIR = "faiss"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(FAISS_DIR, exist_ok=True)
 
-embeddings = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-small-en-v1.5",
-    encode_kwargs={"normalize_embeddings": True}
-)
-
 HF_TOKEN = os.getenv("HF_TOKEN")
 
+embeddings = HuggingFaceInferenceAPIEmbeddings(
+    api_key=HF_TOKEN,
+    model_name="BAAI/bge-small-en-v1.5"
+)
+
+# -------- CLEAN --------
 def clean_text(text):
     return re.sub(r'\s+', ' ', text).strip()
 
@@ -49,13 +52,17 @@ async def upload(file: UploadFile = File(...), user_id: str = ""):
     loader = PyPDFLoader(file_path)
     docs = loader.load()
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=350, chunk_overlap=50)
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=350,
+        chunk_overlap=50
+    )
     chunks = splitter.split_documents(docs)
 
     vectorstore = FAISS.from_documents(chunks, embeddings)
     vectorstore.save_local(f"{FAISS_DIR}/{user_id}")
 
     return {"message": "PDF processed successfully"}
+
 
 def call_llm(context, question):
     API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
@@ -65,7 +72,7 @@ def call_llm(context, question):
     }
 
     prompt = f"""
-Answer clearly using the context below.
+Answer clearly and in detail using ONLY the context below.
 
 Context:
 {context}
@@ -98,7 +105,10 @@ def ask(user_id: str, question: str):
 
     docs = vectorstore.as_retriever(search_kwargs={"k": 3}).invoke(question)
 
-    context = "\n\n".join([clean_text(d.page_content)[:400] for d in docs])
+    context = "\n\n".join([
+        clean_text(d.page_content)[:400] for d in docs
+    ])
 
     answer = call_llm(context, question)
+
     return {"answer": answer}

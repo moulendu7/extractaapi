@@ -48,8 +48,14 @@ async def upload(file: UploadFile = File(...), user_id: str = ""):
         ).split_documents(docs)
 
         vs = FAISS.from_documents(chunks, embeddings)
-        vs.save_local(f"{FAISS_DIR}/{user_id}")
+
+        save_path = f"{FAISS_DIR}/{user_id}"
+        os.makedirs(save_path, exist_ok=True)
+
+        vs.save_local(save_path)
+
         redis_client.setex(f"user:{user_id}", 1800, "active")
+
         return {"message": "PDF stored"}
 
     except Exception as e:

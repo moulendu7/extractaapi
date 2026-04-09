@@ -79,10 +79,10 @@ Answer:
 """
 
         payload = {
-            "model": "mistralai/Mistral-7B-Instruct-v0.2",
+            "model": "HuggingFaceH4/zephyr-7b-beta",
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 300
-        }
+}
 
         res = requests.post(url, headers=headers, json=payload)
 

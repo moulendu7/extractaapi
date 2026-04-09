@@ -4,7 +4,8 @@ import os, shutil, re, requests, pickle, redis
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
+
 
 app = FastAPI()
 
@@ -20,9 +21,9 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-embeddings = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-small-en-v1.5",
-    encode_kwargs={"normalize_embeddings": True}
+embeddings = HuggingFaceEndpointEmbeddings(
+    model="BAAI/bge-small-en-v1.5",
+    huggingfacehub_api_token=HF_TOKEN
 )
 
 def clean_text(text):

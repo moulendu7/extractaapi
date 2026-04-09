@@ -83,7 +83,7 @@ Answer:
 """
 
         payload = {
-            "model": "google/flan-t5-large",
+            "model": "BAAI/bge-small-en-v1.5",
             "prompt": prompt,
             "max_tokens": 300
         }

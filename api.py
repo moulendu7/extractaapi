@@ -9,6 +9,9 @@ from langchain_huggingface import HuggingFaceEndpointEmbeddings
 
 app = FastAPI()
 
+FAISS_DIR = "/tmp/faiss"
+os.makedirs(FAISS_DIR, exist_ok=True)
+
 @app.get("/")
 def home():
     return {"status": "API running"}
@@ -29,19 +32,10 @@ embeddings = HuggingFaceEndpointEmbeddings(
 def clean_text(text):
     return re.sub(r'\s+', ' ', text).strip()
 
-def save_vectorstore(user_id, vs):
-    redis_client.setex(f"user:{user_id}", 1800, pickle.dumps(vs))
-
-def load_vectorstore(user_id):
-    data = redis_client.get(f"user:{user_id}")
-    if not data:
-        return None
-    return pickle.loads(data)
-
 @app.post("/upload")
 async def upload(file: UploadFile = File(...), user_id: str = ""):
     try:
-        path = f"{UPLOAD_DIR}/{user_id}.pdf"
+        path = f"/tmp/{user_id}.pdf"
 
         with open(path, "wb") as f:
             shutil.copyfileobj(file.file, f)
@@ -54,13 +48,12 @@ async def upload(file: UploadFile = File(...), user_id: str = ""):
         ).split_documents(docs)
 
         vs = FAISS.from_documents(chunks, embeddings)
-
-        save_vectorstore(user_id, vs)
-
+        vs.save_local(f"{FAISS_DIR}/{user_id}")
+        redis_client.setex(f"user:{user_id}", 1800, "active")
         return {"message": "PDF stored"}
 
     except Exception as e:
-        return {"message": f"error {str(e)}"}
+        return {"message": str(e)}
 
 def call_llm(context, question):
     try:
@@ -92,35 +85,46 @@ Answer:
         }
 
         res = requests.post(url, headers=headers, json=payload)
+
+        if res.status_code != 200:
+            return f"LLM error: {res.text}"
+
         data = res.json()
 
-        return data["choices"][0]["message"]["content"]
+        return data.get("choices", [{}])[0].get("message", {}).get("content", "No answer")
 
-    except:
-        return "LLM error"
+    except Exception as e:
+        return f"LLM error: {str(e)}"
 
 @app.get("/ask")
 def ask(user_id: str, question: str):
     try:
-        vs = load_vectorstore(user_id)
-
-        if not vs:
+        if not redis_client.get(f"user:{user_id}"):
             return {"answer": "Upload PDF first"}
 
-        docs = vs.as_retriever(search_kwargs={"k": 4}).invoke(question)
-
-        context = "\n\n".join(
-            clean_text(d.page_content)[:400] for d in docs
+        vs = FAISS.load_local(
+            f"{FAISS_DIR}/{user_id}",
+            embeddings,
+            allow_dangerous_deserialization=True
         )
-
+        docs = vs.as_retriever(search_kwargs={"k": 4}).invoke(question)
+        context = "\n\n".join(d.page_content[:400] for d in docs)
         answer = call_llm(context, question)
-
         return {"answer": answer}
-
     except Exception as e:
-        return {"answer": f"error {str(e)}"}
+        return {"answer": str(e)}
 
 @app.get("/reset")
 def reset(user_id: str):
     redis_client.delete(f"user:{user_id}")
     return {"message": "reset done"}
+
+import shutil
+
+@app.get("/cleanup")
+def cleanup(user_id: str):
+    path = f"{FAISS_DIR}/{user_id}"
+    if os.path.exists(path):
+        shutil.rmtree(path)
+    redis_client.delete(f"user:{user_id}")
+    return {"message": "cleaned"}

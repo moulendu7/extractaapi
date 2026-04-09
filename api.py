@@ -1,22 +1,18 @@
 from fastapi import FastAPI, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
 import os, shutil, re, requests, pickle, redis
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
 app = FastAPI()
 
 @app.get("/")
 def home():
-    return {"status": "API running ✅"}
+    return {"status": "API running"}
 
 redis_url = os.getenv("REDIS_URL")
-if not redis_url:
-    raise ValueError("REDIS_URL not set")
-
 redis_client = redis.from_url(redis_url)
 
 UPLOAD_DIR = "/tmp/uploads"
@@ -24,20 +20,16 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-embeddings = HuggingFaceInferenceAPIEmbeddings(
-    api_key=HF_TOKEN,
-    model_name="BAAI/bge-small-en-v1.5"
+embeddings = HuggingFaceEmbeddings(
+    model_name="BAAI/bge-small-en-v1.5",
+    encode_kwargs={"normalize_embeddings": True}
 )
 
 def clean_text(text):
     return re.sub(r'\s+', ' ', text).strip()
 
 def save_vectorstore(user_id, vs):
-    redis_client.setex(
-        f"user:{user_id}",
-        1800,
-        pickle.dumps(vs)
-    )
+    redis_client.setex(f"user:{user_id}", 1800, pickle.dumps(vs))
 
 def load_vectorstore(user_id):
     data = redis_client.get(f"user:{user_id}")
@@ -64,11 +56,10 @@ async def upload(file: UploadFile = File(...), user_id: str = ""):
 
         save_vectorstore(user_id, vs)
 
-        return {"message": "PDF stored (30 min expiry)"}
+        return {"message": "PDF stored"}
 
     except Exception as e:
-        print("UPLOAD ERROR:", str(e))
-        return {"message": f"❌ Upload failed: {str(e)}"}
+        return {"message": f"error {str(e)}"}
 
 def call_llm(context, question):
     try:
@@ -82,8 +73,8 @@ def call_llm(context, question):
         prompt = f"""
 You are a helpful AI assistant.
 
-Answer clearly using the context below.
-If not found, say: Not found in document.
+Answer using the context.
+If not found, say Not found in document.
 
 Context:
 {context}
@@ -100,14 +91,12 @@ Answer:
         }
 
         res = requests.post(url, headers=headers, json=payload)
-
         data = res.json()
 
         return data["choices"][0]["message"]["content"]
 
-    except Exception as e:
-        print("LLM ERROR:", str(e))
-        return "⚠️ LLM failed"
+    except:
+        return "LLM error"
 
 @app.get("/ask")
 def ask(user_id: str, question: str):
@@ -115,7 +104,7 @@ def ask(user_id: str, question: str):
         vs = load_vectorstore(user_id)
 
         if not vs:
-            return {"answer": "❌ Upload PDF first (or expired)."}
+            return {"answer": "Upload PDF first"}
 
         docs = vs.as_retriever(search_kwargs={"k": 4}).invoke(question)
 
@@ -128,10 +117,9 @@ def ask(user_id: str, question: str):
         return {"answer": answer}
 
     except Exception as e:
-        print("ASK ERROR:", str(e))
-        return {"answer": f"⚠️ Server error: {str(e)}"}
+        return {"answer": f"error {str(e)}"}
 
 @app.get("/reset")
 def reset(user_id: str):
     redis_client.delete(f"user:{user_id}")
-    return {"message": "Reset done"}
+    return {"message": "reset done"}

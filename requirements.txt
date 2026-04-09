@@ -7,3 +7,4 @@ faiss-cpu
 requests
 python-multipart
 redis
+sentence-transformers

@@ -63,7 +63,7 @@ async def upload(file: UploadFile = File(...), user_id: str = ""):
 
 def call_llm(context, question):
     try:
-        url = "https://router.huggingface.co/v1/chat/completions"
+        url = "https://router.huggingface.co/v1/completions"
 
         headers = {
             "Authorization": f"Bearer {HF_TOKEN}",
@@ -71,9 +71,7 @@ def call_llm(context, question):
         }
 
         prompt = f"""
-You are a helpful AI assistant.
-
-Answer using the context.
+Answer using the context below.
 If not found, say Not found in document.
 
 Context:
@@ -85,10 +83,10 @@ Answer:
 """
 
         payload = {
-            "model": "HuggingFaceH4/zephyr-7b-beta",
-            "messages": [{"role": "user", "content": prompt}],
+            "model": "google/flan-t5-large",
+            "prompt": prompt,
             "max_tokens": 300
-}
+        }
 
         res = requests.post(url, headers=headers, json=payload)
 
@@ -97,7 +95,7 @@ Answer:
 
         data = res.json()
 
-        return data.get("choices", [{}])[0].get("message", {}).get("content", "No answer")
+        return data.get("choices", [{}])[0].get("text", "No answer")
 
     except Exception as e:
         return f"LLM error: {str(e)}"

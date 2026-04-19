@@ -1,11 +1,11 @@
+import os, shutil, requests, redis, re
 from fastapi import FastAPI, UploadFile, File
-import os, shutil, re, requests, redis
 from dotenv import load_dotenv
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEndpointEmbeddings
+from langchain_core.embeddings import Embeddings
 
 load_dotenv()
 
@@ -20,24 +20,30 @@ os.makedirs(FAISS_DIR, exist_ok=True)
 HF_TOKEN = os.getenv("HF_TOKEN")
 REDIS_URL = os.getenv("REDIS_URL")
 
-if not HF_TOKEN:
-    raise Exception("HF_TOKEN missing")
-
-if not REDIS_URL:
-    raise Exception("REDIS_URL missing")
-
 redis_client = redis.from_url(REDIS_URL)
 
-embeddings = HuggingFaceEndpointEmbeddings(
-    model="BAAI/bge-small-en-v1.5",
-    huggingfacehub_api_token=HF_TOKEN
-)
+class HFAPIEmbeddings(Embeddings):
+    def __init__(self):
+        self.api_url = "https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5/pipeline/feature-extraction"
+        self.headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+
+    def embed_documents(self, texts):
+        res = requests.post(self.api_url, headers=self.headers, json={"inputs": texts})
+        return res.json()
+
+    def embed_query(self, text):
+        res = requests.post(self.api_url, headers=self.headers, json={"inputs": text})
+        return res.json()[0]
+
+embeddings = HFAPIEmbeddings()
 
 def clean_text(text):
-    return re.sub(r'\s+', ' ', text).strip()
+    return re.sub(r"\s+", " ", text).strip()
+
 @app.get("/")
 def home():
     return {"status": "API running"}
+
 @app.post("/upload")
 async def upload(file: UploadFile = File(...), user_id: str = ""):
     try:
@@ -51,10 +57,12 @@ async def upload(file: UploadFile = File(...), user_id: str = ""):
 
         docs = PyPDFLoader(pdf_path).load()
 
-        chunks = RecursiveCharacterTextSplitter(
-            chunk_size=400,
-            chunk_overlap=100
-        ).split_documents(docs)
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=300,
+            chunk_overlap=80
+        )
+
+        chunks = splitter.split_documents(docs)[:50]  # speed limit
 
         vs = FAISS.from_documents(chunks, embeddings)
 
@@ -64,23 +72,22 @@ async def upload(file: UploadFile = File(...), user_id: str = ""):
 
         redis_client.setex(f"user:{user_id}", 1800, "active")
 
-        return {"message": "PDF stored successfully"}
+        return {"message": "PDF stored"}
 
     except Exception as e:
         return {"error": str(e)}
 
 def call_llm(context, question):
-    try:
-        url = "https://router.huggingface.co/v1/chat/completions"
+    url = "https://router.huggingface.co/v1/chat/completions"
 
-        headers = {
-            "Authorization": f"Bearer {HF_TOKEN}",
-            "Content-Type": "application/json"
-        }
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "application/json"
+    }
 
-        prompt = f"""
-Answer ONLY using the context below.
-If answer not found, say: Not found in document.
+    prompt = f"""
+Answer ONLY using the context.
+If not found, say: Not found in document.
 
 Context:
 {context}
@@ -88,39 +95,25 @@ Context:
 Question: {question}
 """
 
-        payload = {
-            "model": "mistralai/Mistral-7B-Instruct-v0.2",
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "max_tokens": 300,
-            "temperature": 0.3
-        }
+    payload = {
+        "model": "mistralai/Mistral-7B-Instruct-v0.2",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 200,
+        "temperature": 0.3
+    }
 
-        res = requests.post(url, headers=headers, json=payload)
+    res = requests.post(url, headers=headers, json=payload)
+    data = res.json()
 
-        if res.status_code != 200:
-            return f"LLM error: {res.text}"
+    return data["choices"][0]["message"]["content"]
 
-        data = res.json()
-
-        return data["choices"][0]["message"]["content"]
-
-    except Exception as e:
-        return f"LLM error: {str(e)}"
 @app.get("/ask")
 def ask(user_id: str, question: str):
     try:
-        if not user_id:
-            return {"answer": "user_id required"}
-
         if not redis_client.get(f"user:{user_id}"):
             return {"answer": "Session expired. Upload PDF again."}
 
         path = f"{FAISS_DIR}/{user_id}"
-
-        if not os.path.exists(path):
-            return {"answer": "Vector DB not found. Upload PDF again."}
 
         vs = FAISS.load_local(
             path,
@@ -130,7 +123,7 @@ def ask(user_id: str, question: str):
 
         docs = vs.as_retriever(search_kwargs={"k": 4}).invoke(question)
 
-        context = "\n\n".join(clean_text(d.page_content[:400]) for d in docs)
+        context = "\n\n".join(clean_text(d.page_content[:300]) for d in docs)
 
         answer = call_llm(context, question)
 
@@ -142,7 +135,7 @@ def ask(user_id: str, question: str):
 @app.get("/reset")
 def reset(user_id: str):
     redis_client.delete(f"user:{user_id}")
-    return {"message": "Session reset"}
+    return {"message": "reset"}
 
 @app.get("/cleanup")
 def cleanup(user_id: str):
@@ -153,4 +146,4 @@ def cleanup(user_id: str):
 
     redis_client.delete(f"user:{user_id}")
 
-    return {"message": "Cleaned successfully"}
+    return {"message": "cleaned"}

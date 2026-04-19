@@ -28,6 +28,38 @@ class HFAPIEmbeddings(Embeddings):
         self.headers = {"Authorization": f"Bearer {HF_TOKEN}"}
 
     def embed_documents(self, texts):
+        res = requests.post(
+            self.api_url,
+            headers=self.headers,
+            json={"inputs": texts}
+        )
+        data = res.json()
+
+        if isinstance(data, dict):
+            raise Exception(f"HF Embedding API Error: {data}")
+
+        if isinstance(data[0], float):
+            data = [data]
+
+        return data
+
+    def embed_query(self, text):
+        res = requests.post(
+            self.api_url,
+            headers=self.headers,
+            json={"inputs": text}
+        )
+        data = res.json()
+
+        if isinstance(data, dict):
+            raise Exception(f"HF Embedding API Error: {data}")
+
+        return data[0] if isinstance(data[0], list) else data
+    def __init__(self):
+        self.api_url = "https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5/pipeline/feature-extraction"
+        self.headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+
+    def embed_documents(self, texts):
         res = requests.post(self.api_url, headers=self.headers, json={"inputs": texts})
         return res.json()
 
